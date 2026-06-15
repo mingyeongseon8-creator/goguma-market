@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>가계부</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -24,7 +25,6 @@
 
     .container { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
-    /* 요약 카드 */
     .summary {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -44,7 +44,6 @@
     .card.expense .amount { color: #ef4444; }
     .card.balance .amount { color: #1a1a1a; }
 
-    /* 입력 폼 */
     .form-card {
       background: white;
       border-radius: 12px;
@@ -72,6 +71,7 @@
       transition: border-color .15s;
     }
     input:focus, select:focus { border-color: #2563eb; }
+    input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
     .btn-add {
       width: 100%;
       padding: 11px;
@@ -85,9 +85,9 @@
       margin-top: 4px;
       transition: background .15s;
     }
-    .btn-add:hover { background: #1d4ed8; }
+    .btn-add:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-add:disabled { opacity: .5; cursor: not-allowed; }
 
-    /* 내역 리스트 */
     .list-card {
       background: white;
       border-radius: 12px;
@@ -149,6 +149,12 @@
       padding: 40px 20px;
       font-size: .88rem;
     }
+    .loading {
+      text-align: center;
+      color: #9ca3af;
+      padding: 40px 20px;
+      font-size: .88rem;
+    }
 
     @media (max-width: 580px) {
       .summary { grid-template-columns: 1fr; }
@@ -162,7 +168,6 @@
 
 <div class="container">
 
-  <!-- 요약 -->
   <div class="summary">
     <div class="card income">
       <div class="label">총 수입</div>
@@ -178,7 +183,6 @@
     </div>
   </div>
 
-  <!-- 입력 폼 -->
   <div class="form-card">
     <h2>거래 추가</h2>
     <div class="form-grid">
@@ -193,10 +197,9 @@
       <input id="amount" type="number" placeholder="금액 (원)" min="1">
       <input id="date" type="date">
     </div>
-    <button class="btn-add" onclick="addTransaction()">+ 추가</button>
+    <button class="btn-add" id="btnAdd" onclick="addTransaction()">+ 추가</button>
   </div>
 
-  <!-- 거래 내역 -->
   <div class="list-card">
     <div class="list-header">
       <h2>거래 내역</h2>
@@ -211,23 +214,22 @@
         </select>
       </div>
     </div>
-    <ul class="tx-list" id="txList"></ul>
+    <ul class="tx-list" id="txList"><div class="loading">불러오는 중...</div></ul>
   </div>
 
 </div>
 
 <script>
-const KEY = 'simple_kakeboo_v1';
-let data = JSON.parse(localStorage.getItem(KEY) || '[]');
+const SUPABASE_URL = 'https://iwlxhucccqxymiposgql.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_-HVoJL3mjZWA8znz2i-JYQ_L-Ul-YYx';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let data = [];
 
 const CATEGORIES = {
   income:  ['급여', '부수입', '용돈', '기타수입'],
   expense: ['식비', '교통', '쇼핑', '의료', '문화', '공과금', '기타'],
 };
-
-function save() {
-  localStorage.setItem(KEY, JSON.stringify(data));
-}
 
 function fmt(n) {
   return Number(n).toLocaleString('ko-KR') + '원';
@@ -239,43 +241,84 @@ function esc(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function setLoading(on) {
+  const btn = document.getElementById('btnAdd');
+  btn.disabled = on;
+  btn.textContent = on ? '저장 중...' : '+ 추가';
+}
+
 function updateCategories() {
   const type = document.getElementById('type').value;
   document.getElementById('category').innerHTML =
     CATEGORIES[type].map(c => `<option value="${c}">${c}</option>`).join('');
 }
 
-function addTransaction() {
-  const type     = document.getElementById('type').value;
-  const category = document.getElementById('category').value;
-  const desc     = document.getElementById('desc').value.trim();
-  const amount   = parseInt(document.getElementById('amount').value, 10);
-  const date     = document.getElementById('date').value;
+async function loadData() {
+  const { data: rows, error } = await sb
+    .from('transactions')
+    .select('*')
+    .order('date', { ascending: false })
+    .order('id', { ascending: false });
 
-  if (!desc)              { alert('내용을 입력하세요.'); return; }
-  if (!amount || amount < 1) { alert('금액을 입력하세요.'); return; }
-  if (!date)              { alert('날짜를 선택하세요.'); return; }
+  if (error) {
+    alert('데이터를 불러오지 못했습니다: ' + error.message);
+    return;
+  }
+  data = rows;
+  render();
+}
 
-  data.push({ id: Date.now(), type, category, desc, amount, date });
-  save();
+async function addTransaction() {
+  const type        = document.getElementById('type').value;
+  const category    = document.getElementById('category').value;
+  const description = document.getElementById('desc').value.trim();
+  const amount      = parseInt(document.getElementById('amount').value, 10);
+  const date        = document.getElementById('date').value;
+
+  if (!description)           { alert('내용을 입력하세요.'); return; }
+  if (!amount || amount < 1)  { alert('금액을 입력하세요.'); return; }
+  if (!date)                  { alert('날짜를 선택하세요.'); return; }
+
+  setLoading(true);
+  const { data: inserted, error } = await sb
+    .from('transactions')
+    .insert({ type, category, description, amount, date })
+    .select()
+    .single();
+  setLoading(false);
+
+  if (error) {
+    alert('저장 실패: ' + error.message);
+    return;
+  }
+
+  data.unshift(inserted);
   render();
 
   document.getElementById('desc').value = '';
   document.getElementById('amount').value = '';
 }
 
-function deleteTransaction(id) {
+async function deleteTransaction(id) {
   if (!confirm('삭제하시겠습니까?')) return;
+
+  const { error } = await sb.from('transactions').delete().eq('id', id);
+  if (error) {
+    alert('삭제 실패: ' + error.message);
+    return;
+  }
+
   data = data.filter(t => t.id !== id);
-  save();
   render();
 }
 
 function render() {
   const ft = document.getElementById('filterType').value;
 
-  // 월 필터 갱신
-  const months = [...new Set(data.map(t => (t.date || '').slice(0, 7)).filter(Boolean))].sort().reverse();
+  const months = [...new Set(
+    data.map(t => (t.date || '').slice(0, 7)).filter(Boolean)
+  )].sort().reverse();
+
   const mSel = document.getElementById('filterMonth');
   const mVal = mSel.value;
   mSel.innerHTML = '<option value="all">전체 월</option>' +
@@ -285,10 +328,8 @@ function render() {
 
   const filtered = data
     .filter(t => ft === 'all' || t.type === ft)
-    .filter(t => fm === 'all' || (t.date || '').startsWith(fm))
-    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id);
+    .filter(t => fm === 'all' || (t.date || '').startsWith(fm));
 
-  // 요약 (필터 무관, 전체 기준)
   const totalIncome  = data.filter(t => t.type === 'income') .reduce((s, t) => s + t.amount, 0);
   const totalExpense = data.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
   const bal = totalIncome - totalExpense;
@@ -309,7 +350,7 @@ function render() {
     <li class="tx-item">
       <div class="tx-dot ${t.type}"></div>
       <div class="tx-info">
-        <div class="tx-desc">${esc(t.desc)}</div>
+        <div class="tx-desc">${esc(t.description)}</div>
         <div class="tx-meta">${esc(t.date)} · ${esc(t.category)}</div>
       </div>
       <div class="tx-amount ${t.type}">${t.type === 'income' ? '+' : '−'}${fmt(t.amount)}</div>
@@ -318,10 +359,9 @@ function render() {
   `).join('');
 }
 
-// 초기화
 updateCategories();
 document.getElementById('date').value = new Date().toISOString().slice(0, 10);
-render();
+loadData();
 </script>
 </body>
 </html>
